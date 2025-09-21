@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "KQLDatabase",
+    "displayName": "LH_FabricRTI",
+    "description": "LH_FabricRTI"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "38f3ead8-d6f5-bdce-48cb-18c4ac6c9aee"
+  }
+}

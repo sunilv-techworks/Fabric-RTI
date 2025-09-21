@@ -1,0 +1,59 @@
+// KQL script
+// Use management commands in this script to configure your database items, such as tables, functions, materialized views, and more.
+
+
+.create-merge table ehAdventureWorksCDC (schema:dynamic, payload:dynamic) 
+.create-merge table SLV_SalesHeaderTable (op:string, SalesOrderID:int, RevisionNumber:int, OrderDate:datetime, DueDate:datetime, ShipDate:datetime, Status:int, OnlineOrderFlag:bool, CustomerID:int, ShipToAddressID:int, Comment:string, ModifiedDate:datetime, IngestedAt:datetime) 
+.create-merge table SLV_SalesOrderDetail (op:string, SalesOrderID:int, SalesOrderDetailID:int, ProductID:int, OrderQty:int, UnitPrice:real, ModifiedDate:datetime, IngestedAt:datetime) 
+.create-or-alter function with (skipvalidation = "true") TransformSalesOrderHeaderToSilver() {
+ehAdventureWorksCDC
+| where tostring(payload.source.table) == "SalesOrderHeader"
+| extend IngestedAt = ingestion_time()
+| extend op = tostring(payload.op)
+| extend columns = iif(op == "d", payload.before, payload.after)
+| extend ModifiedDate = iif(op == "d", IngestedAt, unixtime_milliseconds_todatetime(tolong(columns.ModifiedDate)))
+| extend SalesOrderID = toint(columns.SalesOrderID), RevisionNumber = toint(columns.RevisionNumber),
+         OrderDate = unixtime_milliseconds_todatetime(tolong(columns.OrderDate)), DueDate = unixtime_milliseconds_todatetime(tolong(columns.DueDate)), 
+         ShipDate = unixtime_milliseconds_todatetime(tolong(columns.ShipDate)), Status = toint(columns.Status),
+         OnlineOrderFlag = tobool(columns.OnlineOrderFlag), CustomerID = toint(columns.CustomerID), ShipToAddressID = toint(columns.ShipToAddressID),
+         Comment =  tostring(columns.Comment), ModifiedDate = ModifiedDate // unixtime_milliseconds_todatetime(tolong(columns.ModifiedDate))
+| project op, SalesOrderID, RevisionNumber, OrderDate, DueDate, ShipDate, Status, OnlineOrderFlag, CustomerID, ShipToAddressID, Comment, ModifiedDate, IngestedAt;
+}
+.create-or-alter function with (skipvalidation = "true") TransformSalesOrderDetailToSilver() {
+ehAdventureWorksCDC
+| where tostring(payload.source.table) == "SalesOrderDetail"
+| extend IngestedAt = ingestion_time()
+| extend op = tostring(payload.op)
+| extend columns = iif(op == "d", payload.before, payload.after)
+| extend ModifiedDate = iif(op == "d", IngestedAt, unixtime_milliseconds_todatetime(tolong(columns.ModifiedDate)))
+| extend UnitPriceRaw = tostring(columns.UnitPrice)
+| extend UnitPriceArray = base64_decode_toarray(UnitPriceRaw)
+| extend UnitPriceByteCount = array_length(UnitPriceArray)
+| mv-expand UnitPriceByteIndex = range(0, UnitPriceByteCount-1)  // Expand to iterate over each byte
+| extend ByteValue = tolong(UnitPriceArray[toint(UnitPriceByteIndex)]) * pow(256, UnitPriceByteCount - 1 - toint(UnitPriceByteIndex))
+| summarize UnitPriceInteger = sum(ByteValue) by op = tostring(payload.op), 
+          SalesOrderDetailID = toint(columns.SalesOrderDetailID), 
+          SalesOrderID = toint(columns.SalesOrderID),   
+          ProductID = toint(columns.ProductID),
+          OrderQty = toint(columns.OrderQty),
+        //  UnitPriceStr = UnitPriceRaw,    
+        //  UnitPriceAsArray = tostring(UnitPriceArray),
+          ModifiedDate = ModifiedDate, // unixtime_milliseconds_todatetime(tolong(columns.ModifiedDate)),
+          IngestedAt = IngestedAt
+| extend UnitPrice = toreal(UnitPriceInteger) / 10000.0  // Convert from MONEY integer format
+| project op, SalesOrderID, SalesOrderDetailID, ProductID, OrderQty, UnitPrice, ModifiedDate, IngestedAt;
+}
+.create-or-alter function with (skipvalidation = "true", view = true) vwSalesOrder() { mvSalesOrderDetail
+| join kind=inner 
+(mvSalesHeaderTable
+| project-rename ['SOH.SalesOrderID']=SalesOrderID, ['SOH.ModifiedDate']=ModifiedDate, ['SOH.op']=op, ['SOH.IngestedAt']=IngestedAt) on ($left.SalesOrderID == $right.['SOH.SalesOrderID'])
+| where (op != "d")
+| project op, ['SOH.SalesOrderID'], RevisionNumber, OrderDate, DueDate, ShipDate, Status, OnlineOrderFlag, CustomerID, 
+    ShipToAddressID, Comment, SalesOrderDetailID, ProductID, OrderQty, UnitPrice, LineItemTotal=OrderQty * UnitPrice, ModifiedDate, IngestedAt
+| project-rename SalesOrderID=['SOH.SalesOrderID'] }
+.create-or-alter materialized-view  mvSalesHeaderTable on table SLV_SalesHeaderTable { SLV_SalesHeaderTable
+    | summarize arg_max(ModifiedDate, *) by SalesOrderID }
+.create-or-alter materialized-view  mvSalesOrderDetail on table SLV_SalesOrderDetail { SLV_SalesOrderDetail
+    | summarize arg_max(ModifiedDate, *) by SalesOrderID, SalesOrderDetailID }
+.alter table SLV_SalesHeaderTable policy update "[{\"IsEnabled\":true,\"Source\":\"ehAdventureWorksCDC\",\"Query\":\"TransformSalesOrderHeaderToSilver()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"
+.alter table SLV_SalesOrderDetail policy update "[{\"IsEnabled\":true,\"Source\":\"ehAdventureWorksCDC\",\"Query\":\"TransformSalesOrderDetailToSilver()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false,\"ManagedIdentity\":null}]"

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Eventstream",
+    "displayName": "ES_AdventureWorksLT"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "37d6087a-8929-9d07-453c-0758590c9bf9"
+  }
+}
